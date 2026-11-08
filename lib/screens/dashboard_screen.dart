@@ -205,6 +205,7 @@ class DashboardScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Container(
                 width: 48,
@@ -219,29 +220,31 @@ class DashboardScreen extends StatelessWidget {
                   size: 27,
                 ),
               ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.circle, size: 9, color: Color(0xFF66BB6A)),
-                    SizedBox(width: 7),
-                    Text(
-                      'Online',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12,
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.circle, size: 9, color: Color(0xFF66BB6A)),
+                      SizedBox(width: 3),
+                      Text(
+                        'Online',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -361,7 +364,7 @@ class _StatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(17),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
@@ -389,7 +392,7 @@ class _StatCard extends StatelessWidget {
           Text(
             value,
             style: const TextStyle(
-              fontSize: 25,
+              fontSize: 23,
               fontWeight: FontWeight.bold,
               color: DashboardScreen.textDark,
             ),
@@ -397,8 +400,10 @@ class _StatCard extends StatelessWidget {
           const SizedBox(height: 3),
           Text(
             title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
-              fontSize: 13,
+              fontSize: 12,
               color: DashboardScreen.textGrey,
             ),
           ),
@@ -422,7 +427,7 @@ class _HeaderMiniInfo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(15),
@@ -431,26 +436,28 @@ class _HeaderMiniInfo extends StatelessWidget {
       child: Row(
         children: [
           Icon(icon, color: Colors.white.withValues(alpha: 0.85), size: 20),
-          const SizedBox(width: 9),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                value,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              Text(
-                label,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.65),
-                  fontSize: 10,
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.65),
+                    fontSize: 10,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),

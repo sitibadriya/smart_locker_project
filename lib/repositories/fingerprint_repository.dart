@@ -15,10 +15,10 @@ class FingerprintRepository {
         .where('statusAktif', isEqualTo: true)
         .snapshots()
         .map((snapshot) {
-          return snapshot.docs
-              .map((doc) => Santri.fromFirestore(doc.data()))
-              .toList();
-        });
+      return snapshot.docs
+          .map((doc) => Santri.fromFirestore(doc.data()))
+          .toList();
+    });
   }
 
   // ==========================================
@@ -95,28 +95,65 @@ class FingerprintRepository {
     required String idLocker,
     required String idPerangkat,
   }) async {
-    // Periksa jumlah fingerprint aktif sebelum memulai.
+    // 1. Periksa jumlah fingerprint aktif.
     final jumlah = await hitungFingerprintSantri(idSantri);
 
     if (jumlah >= 5) {
       throw Exception('Santri sudah memiliki 5 fingerprint aktif.');
     }
 
-    // Pastikan santri belum memiliki fingerprint aktif
-    // yang melebihi batas akibat proses bersamaan.
+    // 2. Buat batch enrollment baru.
     final batchId =
         'B${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}';
 
-    // Siapkan konfigurasi locker untuk sesi enrollment.
-    await _firestore.collection('locker-config').doc(idLocker).set({
-      'activeBatchId': batchId,
-      'activeSantriId': idSantri,
-    }, SetOptions(merge: true));
+    // 3. Siapkan referensi dokumen konfigurasi locker.
+    final configRef = _firestore.collection('locker-config').doc(idLocker);
 
-    // Kirim perintah ke ESP32.
-    final commandRef = _firestore
-        .collection('enrollment-commands')
-        .doc(idPerangkat);
+    // 4. Perbarui konfigurasi melalui transaksi.
+    // Nilai perintah yang sudah ada tetap dipertahankan.
+    await _firestore.runTransaction<void>((transaction) async {
+      final snapshot = await transaction.get(configRef);
+
+      final data = snapshot.data() ?? <String, dynamic>{};
+
+      final remoteCommand = (data['remoteCommand'] ?? 'IDLE').toString();
+
+      final resetCommand = (data['resetCommand'] ?? 'IDLE').toString();
+
+      // Jangan memulai enrollment ketika ada perintah lain
+      // yang masih aktif.
+      if (remoteCommand != 'IDLE') {
+        throw Exception(
+          'Locker sedang memiliki perintah remote: $remoteCommand',
+        );
+      }
+
+      if (resetCommand != 'IDLE') {
+        throw Exception(
+          'Locker sedang memiliki perintah reset: $resetCommand',
+        );
+      }
+
+      final configUpdate = <String, dynamic>{
+        'activeBatchId': batchId,
+        'activeSantriId': idSantri,
+        'idLocker': idLocker,
+        'idPerangkat': idPerangkat,
+        'remoteCommand': remoteCommand,
+        'resetCommand': resetCommand,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      transaction.set(
+        configRef,
+        configUpdate,
+        SetOptions(merge: true),
+      );
+    });
+
+    // 5. Kirim perintah enrollment ke ESP32.
+    final commandRef =
+        _firestore.collection('enrollment-commands').doc(idPerangkat);
 
     await commandRef.set({
       'command': 'START_ENROLL',
@@ -126,6 +163,7 @@ class FingerprintRepository {
       'idPerangkat': idPerangkat,
       'batchId': batchId,
       'status': 'pending',
+      'errorMessage': '',
       'createdAt': FieldValue.serverTimestamp(),
     });
 
@@ -172,10 +210,8 @@ class FingerprintRepository {
     }
 
     // Ambil konfigurasi locker untuk memperoleh batch aktif.
-    final configSnapshot = await _firestore
-        .collection('locker-config')
-        .doc(idLocker)
-        .get();
+    final configSnapshot =
+        await _firestore.collection('locker-config').doc(idLocker).get();
 
     if (!configSnapshot.exists) {
       throw Exception('Konfigurasi locker $idLocker tidak ditemukan.');
@@ -196,9 +232,8 @@ class FingerprintRepository {
     // Format ID dokumen harus sama dengan yang dibaca ESP32.
     final documentId = '${idLocker}_${batchId}_${idFingerprint}';
 
-    final mappingRef = _firestore
-        .collection('fingerprint-mapping')
-        .doc(documentId);
+    final mappingRef =
+        _firestore.collection('fingerprint-mapping').doc(documentId);
 
     // Cegah satu ID sensor dipetakan ke dua label
     // dalam batch yang sama.
@@ -244,9 +279,9 @@ class FingerprintRepository {
         .where('statusAktif', isEqualTo: true)
         .snapshots()
         .map((snapshot) {
-          return snapshot.docs.map((doc) {
-            return {...doc.data(), 'documentId': doc.id};
-          }).toList();
-        });
+      return snapshot.docs.map((doc) {
+        return {...doc.data(), 'documentId': doc.id};
+      }).toList();
+    });
   }
 }

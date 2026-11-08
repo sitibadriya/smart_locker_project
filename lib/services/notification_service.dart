@@ -1,195 +1,353 @@
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter/foundation.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'dart:async';
 
-// TOP-LEVEL / BACKGROUND HANDLER
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+import '../firebase_options.dart';
+
 @pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  if (kDebugMode) {
-    print("Handling background message: ${message.messageId}");
-    print("Title: ${message.notification?.title}");
-    print("Body: ${message.notification?.body}");
-  }
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  debugPrint('Push diterima di background: ${message.messageId}');
+  debugPrint('Data push: ${message.data}');
 }
 
+/// NotificationService untuk Android dan Web.
+///
+/// Android:
+/// - Push foreground ditampilkan memakai flutter_local_notifications.
+/// - Push background/terminated ditangani Firebase Messaging.
+///
+/// Web:
+/// - Push foreground diteruskan ke callback [onWebForegroundMessage].
+/// - Push background ditampilkan oleh firebase-messaging-sw.js.
+/// - Pastikan service worker dan VAPID key dikonfigurasi.
 class NotificationService {
-  static final FirebaseMessaging _firebaseMessaging =
-      FirebaseMessaging.instance;
-  static final FlutterLocalNotificationsPlugin _localNotifications =
+  NotificationService._();
+
+  static final FlutterLocalNotificationsPlugin _local =
       FlutterLocalNotificationsPlugin();
 
-  // Inisialisasi Layanan Notifikasi
+  // Samakan dengan channel Android yang digunakan Python notifier.
+  static const String infoChannel = 'smart_locker_alerts';
+  static const String warningChannel = 'smart_locker_alerts';
+  static const String dangerChannel = 'smart_locker_alerts';
+
+  static const String deviceCollection = 'notification-devices';
+
+  static bool _initialized = false;
+  static bool _listenersRegistered = false;
+
+  static StreamSubscription<RemoteMessage>? _foregroundSubscription;
+  static StreamSubscription<RemoteMessage>? _openedSubscription;
+  static StreamSubscription<String>? _tokenRefreshSubscription;
+
+  /// Callback opsional untuk UI Web.
+  /// Pasang callback ini dari halaman utama Flutter Web.
+  static void Function(RemoteMessage message)? onWebForegroundMessage;
+
+  static const AndroidNotificationChannel _channel =
+      AndroidNotificationChannel(
+    infoChannel,
+    'Smart Locker Alerts',
+    description: 'Informasi dan peringatan Smart Locker.',
+    importance: Importance.max,
+  );
+
+  /// Inisialisasi listener setelah Firebase.initializeApp berhasil.
   static Future<void> initialize() async {
-    // 1. Panggil Permintaan Izin (Skenario N01)
-    await requestNotificationPermission();
+    if (_initialized) return;
 
-    // 2. Register Background Handler
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
-    // 3. Setup Local Notification Settings (Android & iOS)
-    const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-
-    const InitializationSettings initSettings = InitializationSettings(
-      android: androidSettings,
+    FirebaseMessaging.onBackgroundMessage(
+      firebaseMessagingBackgroundHandler,
     );
 
-    await _localNotifications.initialize(
-      initSettings,
-      onDidReceiveNotificationResponse: (NotificationResponse details) {
-        if (kDebugMode) {
-          print('Local notification clicked with payload: ${details.payload}');
-        }
-      },
-    );
-
-    // 4. Buat 3 Channel Berbeda di Android (Info, Waspada, Bahaya)
     if (!kIsWeb) {
-      // Channel 1: Info (Hijau / Normal) - Untuk Santri / Aktivitas Normal
-      const AndroidNotificationChannel infoChannel = AndroidNotificationChannel(
-        'locker_info_channel',
-        'Informasi Aktivitas Loker',
-        description: 'Digunakan untuk status normal harian santri.',
-        importance: Importance.defaultImportance,
-        playSound: true,
+      const androidSettings = AndroidInitializationSettings(
+        '@mipmap/ic_launcher',
       );
 
-      // Channel 2: Waspada (Kuning / Medium) - Untuk Pembina Rayon
-      const AndroidNotificationChannel warningChannel =
-          AndroidNotificationChannel(
-        'locker_warning_channel',
-        'Peringatan Waspada Loker',
-        description: 'Digunakan saat percobaan akses salah berulang.',
-        importance: Importance.high,
-        playSound: true,
+      const settings = InitializationSettings(
+        android: androidSettings,
       );
 
-      // Channel 3: Bahaya (Merah / High Alert) - Untuk Sarpras / Pembongkaran
-      const AndroidNotificationChannel dangerChannel =
-          AndroidNotificationChannel(
-        'locker_danger_channel',
-        'Darurat & Bahaya Loker',
-        description: 'Digunakan untuk indikasi pembobolan atau suhu panas.',
-        importance: Importance.max,
-        playSound: true,
+      await _local.initialize(
+        settings,
+        onDidReceiveNotificationResponse: (response) {
+          debugPrint('Notifikasi lokal diketuk: ${response.payload}');
+          // TODO: arahkan ke detail locker/riwayat sesuai payload.
+        },
       );
 
-      final androidPlugin =
-          _localNotifications.resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>();
+      final android = _local.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
 
-      await androidPlugin?.createNotificationChannel(infoChannel);
-      await androidPlugin?.createNotificationChannel(warningChannel);
-      await androidPlugin?.createNotificationChannel(dangerChannel);
+      await android?.createNotificationChannel(_channel);
     }
 
-    // 5. Setup FCM Foreground Handler (Ketika app sedang terbuka)
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      RemoteNotification? notification = message.notification;
-      AndroidNotification? android = message.notification?.android;
+    _registerListeners();
+    _initialized = true;
+  }
 
-      // Ambil tipe channel dari payload data FCM, default ke 'info' jika kosong
-      String channelId = message.data['channel_id'] ?? 'locker_info_channel';
+  /// Meminta izin notifikasi.
+  /// Panggil dari tombol/aksi pengguna, terutama untuk Web.
+  static Future<NotificationSettings> requestPermission() {
+    return FirebaseMessaging.instance.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+      provisional: false,
+    );
+  }
 
-      if (notification != null && (android != null || kIsWeb)) {
-        _showLocalNotification(
-          id: notification.hashCode,
-          title: notification.title ?? '',
-          body: notification.body ?? '',
-          payload: message.data.toString(),
-          channelId: channelId,
-        );
+  static Future<NotificationSettings> getPermissionStatus() {
+    return FirebaseMessaging.instance.getNotificationSettings();
+  }
+
+  /// Simpan token ke notification-devices.
+  /// Document ID memakai token FCM.
+  static Future<void> saveFcmToken(
+    String token, {
+    String? platform,
+  }) async {
+    final devicePlatform =
+        platform ?? (kIsWeb ? 'web' : defaultTargetPlatform.name.toLowerCase());
+
+    await FirebaseFirestore.instance
+        .collection(deviceCollection)
+        .doc(token)
+        .set({
+      'token': token,
+      'platform': devicePlatform,
+      'enabled': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  /// Mendapatkan token FCM.
+  /// Web wajib menggunakan VAPID public key.
+  static Future<String?> getDeviceToken({
+    String? vapidKey,
+  }) async {
+    try {
+      if (kIsWeb && (vapidKey == null || vapidKey.trim().isEmpty)) {
+        debugPrint('Token Web gagal diminta: VAPID public key kosong.');
+        return null;
       }
+
+      final token = kIsWeb
+          ? await FirebaseMessaging.instance.getToken(vapidKey: vapidKey)
+          : await FirebaseMessaging.instance.getToken();
+
+      if (token == null || token.isEmpty) {
+        debugPrint('FCM token kosong.');
+        return null;
+      }
+
+      // Hindari mencetak token lengkap ke log produksi.
+      debugPrint('FCM token berhasil diperoleh (${kIsWeb ? "Web" : "HP"}).');
+
+      await saveFcmToken(token);
+      debugPrint('FCM token berhasil disimpan ke Firestore.');
+
+      return token;
+    } catch (e, stackTrace) {
+      debugPrint('Gagal mendapatkan FCM token: $e');
+      debugPrintStack(stackTrace: stackTrace);
+      return null;
+    }
+  }
+
+  /// Meminta izin, mengambil token, dan mendaftarkan perangkat.
+  static Future<String?> enableAndRegisterDevice({
+    String? vapidKey,
+  }) async {
+    try {
+      final settings = await requestPermission();
+
+      final allowed =
+          settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional;
+
+      if (!allowed) {
+        debugPrint(
+          'Izin notifikasi tidak diberikan: ${settings.authorizationStatus}',
+        );
+        return null;
+      }
+
+      final token = await getDeviceToken(vapidKey: vapidKey);
+      if (token == null || token.isEmpty) return null;
+
+      await _tokenRefreshSubscription?.cancel();
+      _tokenRefreshSubscription =
+          FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+        try {
+          await saveFcmToken(newToken);
+          debugPrint('FCM token diperbarui dan disimpan.');
+        } catch (e, stackTrace) {
+          debugPrint('Gagal menyimpan token baru: $e');
+          debugPrintStack(stackTrace: stackTrace);
+        }
+      });
+
+      return token;
+    } catch (e, stackTrace) {
+      debugPrint('Gagal mendaftarkan perangkat FCM: $e');
+      debugPrintStack(stackTrace: stackTrace);
+      return null;
+    }
+  }
+
+  static void _registerListeners() {
+    if (_listenersRegistered) return;
+    _listenersRegistered = true;
+
+    _foregroundSubscription = FirebaseMessaging.onMessage.listen((message) {
+      unawaited(_showForegroundNotification(message));
     });
 
-    // 6. Cetak FCM Token
-    String? token = await _firebaseMessaging.getToken();
-    if (kDebugMode) {
-      print("==============================================");
-      print("FCM REGISTRATION TOKEN:");
-      print(token);
-      print("==============================================");
-    }
+    _openedSubscription =
+        FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
+
+    unawaited(_handleInitialMessage());
   }
 
-  // Permintaan Izin Notifikasi Resmi menggunakan Permission Handler
-  static Future<bool> requestNotificationPermission() async {
-    // Meminta izin notifikasi secara eksplisit ke sistem Android
-    PermissionStatus status = await Permission.notification.request();
-
-    if (status.isGranted) {
-      if (kDebugMode) print('Izin notifikasi sistem diberikan oleh pengguna.');
-      return true;
-    } else if (status.isDenied) {
-      if (kDebugMode) print('Izin notifikasi sistem ditolak oleh pengguna.');
-      return false;
-    } else if (status.isPermanentlyDenied) {
-      // Jika ditolak secara permanen, arahkan ke pengaturan aplikasi
-      await openAppSettings();
-      return false;
-    }
-    return false;
+  static Future<void> _handleInitialMessage() async {
+    final message = await FirebaseMessaging.instance.getInitialMessage();
+    if (message != null) _handleNotificationTap(message);
   }
 
-  // Tampilkan Local Notification Berdasarkan Channel
-  static Future<void> _showLocalNotification({
-    required int id,
-    required String title,
-    required String body,
-    String? payload,
-    required String channelId,
-  }) async {
-    // Tentukan parameter visual berdasarkan channel yang dikirim
-    Importance importance = Importance.defaultImportance;
-    Priority priority = Priority.defaultPriority;
+  static void _handleNotificationTap(RemoteMessage message) {
+    final data = message.data;
+    debugPrint(
+      'Notifikasi dibuka. '
+      'Jenis: ${data['type'] ?? data['category']}, '
+      'Locker: ${data['idLocker'] ?? data['locker_id']}',
+    );
 
-    if (channelId == 'locker_danger_channel') {
-      importance = Importance.max;
-      priority = Priority.max;
-    } else if (channelId == 'locker_warning_channel') {
-      importance = Importance.high;
-      priority = Priority.high;
+    // TODO: navigasi ke halaman notifikasi/locker.
+    // Gunakan data['idLocker'] atau data['locker_id'].
+  }
+
+  static String _readString(
+    Map<String, dynamic> data,
+    List<String> keys, {
+    String fallback = '',
+  }) {
+    for (final key in keys) {
+      final value = data[key]?.toString().trim();
+      if (value != null && value.isNotEmpty && value != 'null') {
+        return value;
+      }
+    }
+    return fallback;
+  }
+
+  static Future<void> _showForegroundNotification(
+    RemoteMessage message,
+  ) async {
+    final data = message.data;
+
+    final title = message.notification?.title ??
+        _readString(data, ['title', 'judul'], fallback: 'Smart Locker');
+
+    final body = message.notification?.body ??
+        _readString(
+          data,
+          ['body', 'message', 'pesan', 'description'],
+          fallback: 'Ada aktivitas baru pada Smart Locker.',
+        );
+
+    if (kIsWeb) {
+      // Firebase Messaging Web foreground tidak otomatis menampilkan
+      // notification system untuk pesan data-only.
+      onWebForegroundMessage?.call(message);
+      debugPrint('Push Web foreground diterima: $title');
+      return;
     }
 
-    AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      channelId,
-      channelId == 'locker_danger_channel'
-          ? 'Darurat & Bahaya Loker'
-          : channelId == 'locker_warning_channel'
-              ? 'Peringatan Waspada Loker'
-              : 'Informasi Aktivitas Loker',
-      channelDescription: 'Notifikasi sistem keamanan loker pesantren.',
-      importance: importance,
-      priority: priority,
-      playSound: true,
-      icon: '@mipmap/ic_launcher',
-    );
+    final rawLevel = _readString(data, ['level', 'severity'], fallback: 'info')
+        .toLowerCase();
 
-    NotificationDetails platformDetails = NotificationDetails(
-      android: androidDetails,
-    );
+    final isDanger = rawLevel == 'danger' ||
+        rawLevel == 'critical' ||
+        rawLevel == 'error';
 
-    await _localNotifications.show(
-      id,
+    final isWarning = rawLevel == 'warning' || rawLevel == 'warn';
+
+    final priority = isDanger
+        ? Priority.max
+        : isWarning
+            ? Priority.high
+            : Priority.defaultPriority;
+
+    final importance = isDanger
+        ? Importance.max
+        : isWarning
+            ? Importance.high
+            : Importance.defaultImportance;
+
+    final lockerId = _readString(data, ['idLocker', 'locker_id', 'locker']);
+    final notificationId =
+        message.messageId?.hashCode ?? DateTime.now().millisecondsSinceEpoch;
+
+    await _local.show(
+      notificationId,
       title,
       body,
-      platformDetails,
-      payload: payload,
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _channel.id,
+          _channel.name,
+          channelDescription: _channel.description,
+          importance: importance,
+          priority: priority,
+          icon: '@mipmap/ic_launcher',
+          styleInformation: BigTextStyleInformation(body),
+        ),
+      ),
+      payload: lockerId,
     );
   }
 
-  // Fungsi Helper untuk memicu Notifikasi Lokal secara manual
-  static Future<void> triggerManualNotification({
-    required String title,
-    required String body,
-    String channelId = 'locker_info_channel',
-  }) async {
-    await _showLocalNotification(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title: title,
-      body: body,
-      channelId: channelId,
-    );
+  /// Menonaktifkan token perangkat di Firestore.
+  /// Tidak menghapus dokumen agar riwayat registrasi tetap ada.
+  static Future<void> disableCurrentDevice() async {
+    try {
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token == null || token.isEmpty) return;
+
+      await FirebaseFirestore.instance
+          .collection(deviceCollection)
+          .doc(token)
+          .set({
+        'enabled': false,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await FirebaseMessaging.instance.deleteToken();
+      debugPrint('Perangkat berhasil dinonaktifkan dari notifikasi.');
+    } catch (e) {
+      debugPrint('Gagal menonaktifkan perangkat: $e');
+    }
+  }
+
+  static Future<void> dispose() async {
+    await _foregroundSubscription?.cancel();
+    await _openedSubscription?.cancel();
+    await _tokenRefreshSubscription?.cancel();
+
+    _foregroundSubscription = null;
+    _openedSubscription = null;
+    _tokenRefreshSubscription = null;
+    _listenersRegistered = false;
+    _initialized = false;
   }
 }

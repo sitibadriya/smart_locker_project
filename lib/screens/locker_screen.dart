@@ -26,19 +26,14 @@ class _LockerScreenState extends State<LockerScreen> {
   }
 
   Future<void> _checkAndRequestPermission() async {
-    bool granted = await NotificationService.requestNotificationPermission();
-    if (!granted && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Izin notifikasi tidak diaktifkan. Anda mungkin melewatkan peringatan keamanan loker.',
-          ),
-        ),
-      );
+    try {
+      await NotificationService.requestPermission();
+    } catch (e) {
+      debugPrint('Gagal meminta izin notifikasi: $e');
     }
   }
 
-  // DIALOG TAMBAH / EDIT LOKER (CRUD)
+  // DIALOG TAMBAH / EDIT LOKER
   void _showLockerFormDialog(
     BuildContext context, {
     String? lockerId,
@@ -108,7 +103,16 @@ class _LockerScreenState extends State<LockerScreen> {
                       final id = idController.text.trim();
                       final deviceId = deviceController.text.trim();
 
-                      if (id.isEmpty || deviceId.isEmpty) return;
+                      if (id.isEmpty || deviceId.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'ID loker dan ID perangkat wajib diisi.',
+                            ),
+                          ),
+                        );
+                        return;
+                      }
 
                       setDialogState(() => isLoading = true);
 
@@ -138,9 +142,14 @@ class _LockerScreenState extends State<LockerScreen> {
                         if (ctx.mounted) Navigator.pop(ctx);
                       } catch (e) {
                         setDialogState(() => isLoading = false);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Gagal menyimpan loker: $e')),
-                        );
+
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Gagal menyimpan loker: $e'),
+                            ),
+                          );
+                        }
                       }
                     },
               style: ElevatedButton.styleFrom(
@@ -167,12 +176,14 @@ class _LockerScreenState extends State<LockerScreen> {
     );
   }
 
-  // KONFIRMASI HAPUS LOKER (DELETE)
+  // KONFIRMASI HAPUS LOKER
   void _confirmDeleteLocker(BuildContext context, String lockerId) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
         title: Text('Hapus Loker $lockerId?'),
         content: const Text(
           'Dokumen konfigurasi unit loker ini akan dihapus permanen dari sistem.',
@@ -184,11 +195,22 @@ class _LockerScreenState extends State<LockerScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              await FirebaseFirestore.instance
-                  .collection('locker-config')
-                  .doc(lockerId)
-                  .delete();
-              if (ctx.mounted) Navigator.pop(ctx);
+              try {
+                await FirebaseFirestore.instance
+                    .collection('locker-config')
+                    .doc(lockerId)
+                    .delete();
+
+                if (ctx.mounted) Navigator.pop(ctx);
+              } catch (e) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    SnackBar(
+                      content: Text('Gagal menghapus loker: $e'),
+                    ),
+                  );
+                }
+              }
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
@@ -246,7 +268,11 @@ class _LockerScreenState extends State<LockerScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: const [
-                  Icon(Icons.inventory_2_outlined, size: 70, color: textGrey),
+                  Icon(
+                    Icons.inventory_2_outlined,
+                    size: 70,
+                    color: textGrey,
+                  ),
                   SizedBox(height: 16),
                   Text(
                     'Belum Ada Unit Loker',
@@ -280,6 +306,7 @@ class _LockerScreenState extends State<LockerScreen> {
                       '')
                   .toString()
                   .trim();
+
               if (deviceId.isEmpty) {
                 deviceId = '-';
               }
@@ -346,7 +373,6 @@ class _LockerScreenState extends State<LockerScreen> {
                                       ),
                                     ),
                                     const SizedBox(height: 5),
-                                    // Teks perangkat dibungkus Expanded & diberi TextOverflow.ellipsis agar bebas overflow
                                     Row(
                                       children: [
                                         Expanded(

@@ -23,10 +23,7 @@
     <!-- iOS meta tags & icons -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black" />
-    <meta
-      name="apple-mobile-web-app-title"
-      content="Smart Locker"
-    />
+    <meta name="apple-mobile-web-app-title" content="Smart Locker" />
     <link rel="apple-touch-icon" href="icons/Icon-192.png" />
 
     <!-- Favicon -->
@@ -45,5 +42,22 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
     <script src="flutter_bootstrap.js" async></script>
+
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", function () {
+          navigator.serviceWorker
+            .register("firebase-messaging-sw.js", {
+              scope: "/firebase-cloud-messaging-push-scope",
+            })
+            .then(function (registration) {
+              console.log("FCM Service Worker aktif:", registration.scope);
+            })
+            .catch(function (error) {
+              console.error("FCM Service Worker gagal:", error);
+            });
+        });
+      }
+    </script>
   </body>
 </html>

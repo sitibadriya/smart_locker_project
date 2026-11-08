@@ -16,6 +16,7 @@ dependencies:
   permission_handler: ^11.3.1
   cloud_firestore: ^5.6.1
   cupertino_icons: ^1.0.8
+  firebase_auth: ^5.7.0
 
 dev_dependencies:
   flutter_test:
